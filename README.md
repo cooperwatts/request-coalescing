@@ -45,7 +45,7 @@ When multiple requests for the same resource arrive simultaneously (thundering h
 
 ```
 src/
-├── index.ts                       # Main worker (add routes here)
+├── index.ts                      # Main worker (add routes here)
 ├── constants/
 │   └── routes.ts                 # Route definitions
 ├── types/
