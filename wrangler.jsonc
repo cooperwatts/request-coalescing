@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "request-coalescing",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-12-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PRODUCT_COALESCER",
+        "class_name": "ProductCoalescer",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ProductCoalescer"],
+    },
+  ],
+  "vars": {
+    "PRODUCT_API_BASE": "https://api.example.com/",
+    "FRESH_TTL_MS": "10000",
+    "STALE_TTL_MS": "60000",
+  },
+}
