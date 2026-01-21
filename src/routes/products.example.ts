@@ -6,22 +6,14 @@ import { createCoalescedHandler } from "./coalesced-handler";
  * This demonstrates how to create a coalesced endpoint.
  * To use this example:
  *
- * 1. Rename this file to products.ts (remove .example)
- *
- * 2. Add to src/routes/index.ts:
- *    import { getProducts } from "./products";
+ * Add to src/routes/index.ts:
+ *    import { getProducts } from "./products.example";
  *
  *    export const routes = {
  *      "/products": getProducts,
  *    };
  *
- * 3. The PRODUCT_API_BASE is already configured in wrangler.jsonc
- */
-
-interface ProductParams {
-  productId: string;
-  fields: string[];
-}
+ * The PRODUCT_API_BASE is already configured in wrangler.jsonc
 
 export const getProducts = createCoalescedHandler<ProductParams>({
   // Uses the REQUEST_COALESCER binding from wrangler.jsonc

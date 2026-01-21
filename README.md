@@ -14,7 +14,7 @@ When multiple requests for the same resource arrive simultaneously (thundering h
 
 ✨ **Fully Generic & Reusable**
 
-- Not limited to products - works with **any API or resource type**
+- Not limited to one specific API - works with **any API or resource type**
 - Configurable cache keys (by ID, fields, or any combination)
 - Configurable upstream URLs and request patterns
 - Easy to add new endpoints with minimal code
@@ -75,75 +75,22 @@ Let's implement a product API endpoint that coalesces requests and caches respon
 
 ### 1. Create the Route Handler
 
-Rename `src/routes/products.example.ts` to `src/routes/products.ts` (it already contains):
+The example file `src/routes/products.example.ts` contains a complete implementation that:
 
-```typescript
-import { createCoalescedHandler } from "./coalesced-handler";
+- **Parses** `productId` and `fields` from query parameters
+- **Validates** required parameters (returns 400 if missing)
+- **Routes** requests to a Durable Object by `productId`
+- **Builds cache keys** using `productId` + sorted fields for consistency
+- **Constructs upstream URLs** to fetch from your API
 
-interface ProductParams {
-  productId: string;
-  fields: string[];
-}
-
-export const getProducts = createCoalescedHandler<ProductParams>({
-  // Uses the REQUEST_COALESCER binding from wrangler.jsonc
-  doBindingName: "REQUEST_COALESCER",
-
-  // Environment variable for upstream API base URL
-  apiBaseEnvVar: "PRODUCT_API_BASE",
-  defaultApiBase: "/mock-api",
-
-  // Parse and validate incoming request
-  parseRequest: (request) => {
-    const url = new URL(request.url);
-    const productId = url.searchParams.get("productId");
-
-    if (!productId) {
-      return Response.json(
-        { error: "Missing required query param: productId" },
-        { status: 400 },
-      );
-    }
-
-    const fieldsParam = url.searchParams.get("fields");
-    const fields = (fieldsParam ?? "")
-      .split(",")
-      .map((f) => f.trim())
-      .filter(Boolean);
-
-    return { productId, fields };
-  },
-
-  // Route by product ID - same product → same DO instance
-  buildDOName: (params) => params.productId,
-
-  // Configure cache keys and upstream URLs
-  coalescerConfig: {
-    // Cache key: productId + sorted fields
-    buildCacheKey: (params) => {
-      const normalizedFields = Array.from(new Set(params.fields)).sort();
-      return `${params.productId}::${normalizedFields.join(",")}`;
-    },
-
-    // Build upstream API URL
-    buildUpstreamUrl: (params, apiBase) => {
-      const url = new URL(`${apiBase.replace(/\/+$/, "")}/product`);
-      url.searchParams.set("productId", params.productId);
-      if (params.fields.length > 0) {
-        url.searchParams.set("fields", params.fields.join(","));
-      }
-      return url.toString();
-    },
-  },
-});
-```
+The handler uses `createCoalescedHandler` which wraps all the coalescing and caching logic.
 
 ### 2. Register the Route
 
 Add to `src/routes/index.ts`:
 
 ```typescript
-import { getProducts } from "./products";
+import { getProducts } from "./products.example";
 
 export const routes: Record<string, RouteHandler> = {
   "/products": getProducts,
@@ -182,60 +129,16 @@ curl "http://localhost:8787/products?productId=SKU123&fields=name,price"
 
 ## Adding More Endpoints
 
-You can create handlers for any resource type by following the same pattern as products:
+You can create handlers for any resource type by following the same pattern:
 
-1. **Copy the pattern** from `src/routes/products.example.ts`
-2. **Define your params interface** (e.g., `UserParams`, `OrderParams`)
-3. **Configure** `parseRequest`, `buildDOName`, and `coalescerConfig`
+1. **Copy** `src/routes/products.example.ts` as a starting point
+2. **Define your params interface** (e.g., `OrderParams`, `ConfigParams`)
+3. **Configure** how to parse requests, build cache keys, and construct upstream URLs
 4. **Register** in `src/routes/index.ts`
 
-Example for a users endpoint - create `src/routes/users.ts`:
+The framework handles all the coalescing, caching, and stale-while-revalidate logic automatically.
 
-```typescript
-import { createCoalescedHandler } from "./coalesced-handler";
-
-interface UserParams {
-  userId: string;
-}
-
-export const getUsers = createCoalescedHandler<UserParams>({
-  doBindingName: "REQUEST_COALESCER",
-  apiBaseEnvVar: "USER_API_BASE",
-  defaultApiBase: "/mock-api",
-
-  parseRequest: (request) => {
-    const url = new URL(request.url);
-    const userId = url.searchParams.get("userId");
-    if (!userId) {
-      return Response.json({ error: "Missing userId" }, { status: 400 });
-    }
-    return { userId };
-  },
-
-  buildDOName: (params) => params.userId,
-
-  coalescerConfig: {
-    buildCacheKey: (params) => params.userId,
-    buildUpstreamUrl: (params, apiBase) =>
-      `${apiBase}/user?userId=${params.userId}`,
-  },
-});
-```
-
-Then add to `src/routes/index.ts`:
-
-```typescript
-import { getUsers } from "./users";
-
-export const routes = {
-  "/products": getProducts,
-  "/users": getUsers, // ← Add this
-};
-```
-
-That's it! 🎉
-
-### Cache Key Patterns
+## Configuration
 
 The `buildCacheKey` function determines what makes requests "identical":
 
@@ -262,11 +165,11 @@ The `buildDOName` function controls which Durable Object handles requests:
 // By resource ID (recommended for most cases)
 buildDOName: (params) => params.productId;
 
-// By user (all user requests → same DO)
-buildDOName: (params) => params.userId;
-
 // By region (geographic distribution)
 buildDOName: (params) => `${params.region}::${params.id}`;
+
+// By tenant (multi-tenancy)
+buildDOName: (params) => params.tenantId;
 ```
 
 ### Environment Variables
@@ -318,7 +221,6 @@ See [src/do/README.md](src/do/README.md) for detailed architecture documentation
 This pattern works for any high-traffic API scenario:
 
 - **Product/Catalog APIs** - E-commerce product pages
-- **User Profile APIs** - Profile data, settings, preferences
 - **Pricing APIs** - Real-time pricing with frequent identical requests
 - **Inventory APIs** - Stock levels checked by many users
 - **Content APIs** - CMS content, blog posts, articles
