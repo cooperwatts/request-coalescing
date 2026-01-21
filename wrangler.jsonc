@@ -6,8 +6,8 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "PRODUCT_COALESCER",
-        "class_name": "ProductCoalescer",
+        "name": "REQUEST_COALESCER",
+        "class_name": "RequestCoalescer",
       },
     ],
   },
@@ -15,6 +15,15 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ProductCoalescer"],
+    },
+    {
+      "tag": "v2",
+      "renamed_classes": [
+        {
+          "from": "ProductCoalescer",
+          "to": "RequestCoalescer",
+        },
+      ],
     },
   ],
   "vars": {

@@ -7,7 +7,39 @@ import type {
 } from "../types";
 
 /**
- * ProductCoalescer is a Durable Object that implements request coalescing and multi-tier caching.
+ * Configuration for building cache keys and upstream API URLs
+ */
+export interface CoalescerConfig {
+  /**
+   * Builds the cache key from request parameters
+   * This determines what makes two requests "identical" for coalescing
+   *
+   * @example
+   * // For products by ID and fields:
+   * (params) => `${params.productId}::${params.fields.sort().join(',')}`
+   *
+   * // For user data by ID only:
+   * (params) => params.userId
+   */
+  buildCacheKey: (params: Record<string, any>) => CoalescedKey;
+
+  /**
+   * Builds the upstream API URL from request parameters
+   *
+   * @example
+   * // For products API:
+   * (params, apiBase) => {
+   *   const url = new URL(`${apiBase}/product`);
+   *   url.searchParams.set('productId', params.productId);
+   *   if (params.fields?.length) url.searchParams.set('fields', params.fields.join(','));
+   *   return url.toString();
+   * }
+   */
+  buildUpstreamUrl: (params: Record<string, any>, apiBase: string) => string;
+}
+
+/**
+ * RequestCoalescer is a generic Durable Object that implements request coalescing and multi-tier caching.
  *
  * **Purpose:**
  * - Prevents thundering herd: Multiple concurrent identical requests are deduplicated into one upstream call
@@ -19,7 +51,7 @@ import type {
  * 2. Persistent storage (survives hibernation, per-DO instance)
  * 3. Upstream API (fallback)
  */
-export class ProductCoalescer extends DurableObject<Env> {
+export class RequestCoalescer extends DurableObject<Env> {
   /**
    * Map of in-flight requests to prevent duplicate concurrent fetches.
    * Key: coalesced request key, Value: Promise of the upstream fetch
@@ -50,26 +82,8 @@ export class ProductCoalescer extends DurableObject<Env> {
   }
 
   /**
-   * Creates a normalized cache key from product ID and fields.
-   * Ensures that requests with the same fields in different orders map to the same key.
-   *
-   * @param productId - The product identifier
-   * @param fields - Array of field names to include in the response
-   * @returns Normalized cache key in format "productId::field1,field2"
-   *
-   * @example
-   * makeKey("SKU123", ["price", "name"]) === makeKey("SKU123", ["name", "price"])
-   * // Returns: "SKU123::name,price"
-   */
-  private makeCacheKey(productId: string, fields: string[]): CoalescedKey {
-    const normalizedFields = Array.from(
-      new Set(fields.map((f) => f.trim()).filter(Boolean)),
-    ).sort();
-    return `${productId}::${normalizedFields.join(",")}`;
-  }
-
-  /**
-   * Retrieves product data with request coalescing and multi-tier caching.
+   * Retrieves data with request coalescing and multi-tier caching.
+   * This is a generic method that can handle any type of request based on the provided configuration.
    *
    * **Request Flow:**
    * 1. Check memory cache (fastest)
@@ -78,21 +92,21 @@ export class ProductCoalescer extends DurableObject<Env> {
    * 4. Serve stale data if available (with background refresh)
    * 5. Fetch from upstream (as last resort)
    *
-   * @param productId - Unique product identifier
-   * @param fields - Array of fields to retrieve (e.g., ["name", "price"])
-   * @param apiBase - Base URL of the upstream product API
+   * @param params - Request parameters (e.g., { productId, fields } or { userId, options })
+   * @param apiBase - Base URL of the upstream API
+   * @param config - Configuration for building cache keys and upstream URLs
    * @returns Serializable response containing status, headers, and body
    *
    * @remarks
    * This is an RPC method called by the Worker. Multiple concurrent calls
-   * with identical parameters will be coalesced into a single upstream request.
+   * with identical cache keys will be coalesced into a single upstream request.
    */
-  async getProduct(
-    productId: string,
-    fields: string[],
+  async fetchCoalesced(
+    params: Record<string, any>,
     apiBase: string,
+    config: CoalescerConfig,
   ): Promise<SerializableResponse> {
-    const cacheKey = this.makeCacheKey(productId, fields);
+    const cacheKey = config.buildCacheKey(params);
     const now = Date.now();
 
     // Step 1: Try memory cache (sub-millisecond response)
@@ -116,9 +130,9 @@ export class ProductCoalescer extends DurableObject<Env> {
     // Step 4: Try serving stale data (if within stale window)
     const staleResult = await this.tryServeStale(
       cacheKey,
-      productId,
-      fields,
+      params,
       apiBase,
+      config,
       now,
     );
     if (staleResult) {
@@ -126,7 +140,7 @@ export class ProductCoalescer extends DurableObject<Env> {
     }
 
     // Step 5: No cache available - fetch from upstream and coalesce
-    return this.fetchAndCoalesce(cacheKey, productId, fields, apiBase);
+    return this.fetchAndCoalesce(cacheKey, params, apiBase, config);
   }
 
   /**
@@ -209,17 +223,17 @@ export class ProductCoalescer extends DurableObject<Env> {
    * This implements the "stale-while-revalidate" pattern.
    *
    * @param cacheKey - The cache key
-   * @param productId - Product identifier
-   * @param fields - Fields to fetch
+   * @param params - Request parameters
    * @param apiBase - API base URL
+   * @param config - Coalescer configuration
    * @param now - Current timestamp
    * @returns Stale response if available, null otherwise
    */
   private async tryServeStale(
     cacheKey: CoalescedKey,
-    productId: string,
-    fields: string[],
+    params: Record<string, any>,
     apiBase: string,
+    config: CoalescerConfig,
     now: number,
   ): Promise<SerializableResponse | null> {
     const persisted = await this.ctx.storage.get<CacheEntry>(cacheKey);
@@ -235,7 +249,7 @@ export class ProductCoalescer extends DurableObject<Env> {
 
     // Trigger background refresh (fire-and-forget)
     // Concurrent refresh requests will be coalesced
-    void this.backgroundRefresh(cacheKey, productId, fields, apiBase);
+    void this.backgroundRefresh(cacheKey, params, apiBase, config);
 
     // Return stale data immediately
     return {
@@ -250,22 +264,22 @@ export class ProductCoalescer extends DurableObject<Env> {
    * Multiple concurrent calls with the same key will await the same promise.
    *
    * @param cacheKey - The cache key
-   * @param productId - Product identifier
-   * @param fields - Fields to fetch
+   * @param params - Request parameters
    * @param apiBase - API base URL
+   * @param config - Coalescer configuration
    * @returns Promise of the response
    */
   private fetchAndCoalesce(
     cacheKey: CoalescedKey,
-    productId: string,
-    fields: string[],
+    params: Record<string, any>,
     apiBase: string,
+    config: CoalescerConfig,
   ): Promise<SerializableResponse> {
     const fetchPromise = this.fetchUpstreamAndCache(
       cacheKey,
-      productId,
-      fields,
+      params,
       apiBase,
+      config,
     ).finally(() => {
       // Clean up the in-flight map when done
       this.inflightRequests.delete(cacheKey);
@@ -280,15 +294,15 @@ export class ProductCoalescer extends DurableObject<Env> {
    * If a refresh is already in progress, it piggybacks on that request.
    *
    * @param cacheKey - The cache key
-   * @param productId - Product identifier
-   * @param fields - Fields to fetch
+   * @param params - Request parameters
    * @param apiBase - API base URL
+   * @param config - Coalescer configuration
    */
   private async backgroundRefresh(
     cacheKey: CoalescedKey,
-    productId: string,
-    fields: string[],
+    params: Record<string, any>,
     apiBase: string,
+    config: CoalescerConfig,
   ): Promise<void> {
     // If already refreshing, don't start another one
     if (this.inflightRequests.has(cacheKey)) {
@@ -297,9 +311,9 @@ export class ProductCoalescer extends DurableObject<Env> {
 
     const refreshPromise = this.fetchUpstreamAndCache(
       cacheKey,
-      productId,
-      fields,
+      params,
       apiBase,
+      config,
     ).finally(() => {
       this.inflightRequests.delete(cacheKey);
     });
@@ -312,26 +326,22 @@ export class ProductCoalescer extends DurableObject<Env> {
    * Fetches data from the upstream API and caches it in both memory and storage.
    *
    * @param cacheKey - The cache key
-   * @param productId - Product identifier
-   * @param fields - Array of fields to request
+   * @param params - Request parameters
    * @param apiBase - Base URL of the upstream API
+   * @param config - Coalescer configuration
    * @returns Serializable response from upstream
    */
   private async fetchUpstreamAndCache(
     cacheKey: CoalescedKey,
-    productId: string,
-    fields: string[],
+    params: Record<string, any>,
     apiBase: string,
+    config: CoalescerConfig,
   ): Promise<SerializableResponse> {
-    // Build the upstream API URL
-    const url = new URL(`${apiBase.replace(/\/+$/, "")}/product`);
-    url.searchParams.set("productId", productId);
-    if (fields.length > 0) {
-      url.searchParams.set("fields", fields.join(","));
-    }
+    // Build the upstream API URL using the provided configuration
+    const url = config.buildUpstreamUrl(params, apiBase);
 
     // Fetch from upstream
-    const response = await fetch(url.toString(), {
+    const response = await fetch(url, {
       method: "GET",
       headers: { Accept: "application/json" },
     });
