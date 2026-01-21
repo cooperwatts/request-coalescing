@@ -107,16 +107,6 @@ npx wrangler dev
 curl "http://localhost:8787/products?productId=SKU123&fields=name,price"
 ```
 
-**Response:**
-
-```json
-{
-  "id": "SKU123",
-  "name": "Product Name",
-  "price": 42.5
-}
-```
-
 ### What Just Happened?
 
 1. ✅ Your request was routed to a named Durable Object based on `productId`
