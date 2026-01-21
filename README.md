@@ -109,7 +109,7 @@ curl "http://localhost:8787/products?productId=SKU123&fields=name,price"
 
 ### What Just Happened?
 
-1. ✅ Your request was routed to a named Durable Object based on `productId`
+1. ✅ Your request was routed to a named Durable Object based on `productId::fieldx`
 2. ✅ The DO checked its multi-tier cache (memory → storage → upstream)
 3. ✅ Multiple concurrent requests for the same product+fields are coalesced into one upstream call
 4. ✅ Results are cached for fast subsequent access
