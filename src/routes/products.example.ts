@@ -14,6 +14,12 @@ import { createCoalescedHandler } from "./coalesced-handler";
  *    };
  *
  * The PRODUCT_API_BASE is already configured in wrangler.jsonc
+ */
+
+interface ProductParams {
+  productId: string;
+  fields: string[];
+}
 
 export const getProducts = createCoalescedHandler<ProductParams>({
   // Uses the REQUEST_COALESCER binding from wrangler.jsonc
