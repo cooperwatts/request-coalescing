@@ -51,10 +51,10 @@ src/
 │   ├── env.ts                    # Environment configuration
 │   └── cache.ts                  # Cache-related types
 ├── routes/
-│   ├── coalesced-handler.ts      # Generic handler factory 🎯
+│   ├── coalesced-handler.ts      # Generic handler factory
 │   └── products.example.ts       # Example: Product API template
 └── do/
-    ├── RequestCoalescer.ts       # Generic coalescing DO 🎯
+    ├── RequestCoalescer.ts       # Generic coalescing DO
     └── README.md                 # Architecture docs
 ```
 
