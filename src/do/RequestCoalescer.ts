@@ -324,12 +324,13 @@ export class RequestCoalescer extends DurableObject<Env> {
 
   /**
    * Fetches data from the upstream API and caches it in both memory and storage.
+   * Falls back to Last Known Good (LKG) if upstream fails or returns 5xx error.
    *
    * @param cacheKey - The cache key
    * @param params - Request parameters
    * @param apiBase - Base URL of the upstream API
    * @param config - Coalescer configuration
-   * @returns Serializable response from upstream
+   * @returns Serializable response from upstream or LKG fallback
    */
   private async fetchUpstreamAndCache(
     cacheKey: CoalescedKey,
@@ -340,39 +341,90 @@ export class RequestCoalescer extends DurableObject<Env> {
     // Build the upstream API URL using the provided configuration
     const url = config.buildUpstreamUrl(params, apiBase);
 
-    // Fetch from upstream
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-    });
+    try {
+      // Fetch from upstream
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
 
-    // Parse response body (gracefully handle non-JSON)
-    const body = await response.json().catch(() => null);
+      // If upstream returns 5xx error, fall back to LKG
+      if (response.status >= 500) {
+        const lkg = await this.getLastKnownGood(cacheKey);
+        if (lkg) {
+          return lkg;
+        }
+      }
 
-    // Construct response headers
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": `public, max-age=${Math.floor(this.FRESH_TTL_MS / 1000)}, stale-while-revalidate=${Math.floor(this.STALE_TTL_MS / 1000)}`,
-      "CF-Cache-Status": "MISS", // Indicates this came from upstream
-    };
+      // Parse response body (gracefully handle non-JSON)
+      const body = await response.json().catch(() => null);
 
-    const now = Date.now();
-    const cacheEntry: CacheEntry = {
-      status: response.status,
-      headers,
-      body,
-      expiresAt: now + this.FRESH_TTL_MS,
-      persistedAt: now,
-    };
+      // Construct response headers
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": `public, max-age=${Math.floor(this.FRESH_TTL_MS / 1000)}, stale-while-revalidate=${Math.floor(this.STALE_TTL_MS / 1000)}`,
+        "CF-Cache-Status": "MISS", // Indicates this came from upstream
+      };
 
-    // Store in both caches (memory for speed, storage for persistence)
-    this.memoryCache.set(cacheKey, cacheEntry);
-    await this.ctx.storage.put(cacheKey, cacheEntry);
+      const now = Date.now();
+      const cacheEntry: CacheEntry = {
+        status: response.status,
+        headers,
+        body,
+        expiresAt: now + this.FRESH_TTL_MS,
+        persistedAt: now,
+      };
 
+      // Store in both caches (memory for speed, storage for persistence)
+      // Only cache successful responses (2xx/3xx)
+      if (response.status < 400) {
+        this.memoryCache.set(cacheKey, cacheEntry);
+        await this.ctx.storage.put(cacheKey, cacheEntry);
+      }
+
+      return {
+        status: response.status,
+        headers,
+        body,
+      };
+    } catch (error) {
+      // Network error, timeout, or other fetch failure
+      // Try to return Last Known Good from storage
+      const lkg = await this.getLastKnownGood(cacheKey);
+      if (lkg) {
+        return lkg;
+      }
+
+      // No LKG available, throw the error
+      throw error;
+    }
+  }
+
+  /**
+   * Retrieves Last Known Good (LKG) data from storage, ignoring TTL.
+   * This is used as a fallback when upstream is unavailable or returns errors.
+   *
+   * @param cacheKey - The cache key
+   * @returns LKG response with special header, or null if not found
+   */
+  private async getLastKnownGood(
+    cacheKey: CoalescedKey,
+  ): Promise<SerializableResponse | null> {
+    const persisted = await this.ctx.storage.get<CacheEntry>(cacheKey);
+
+    if (!persisted) {
+      return null;
+    }
+
+    // Return LKG regardless of age, with special header indicating fallback
     return {
-      status: response.status,
-      headers,
-      body,
+      status: persisted.status,
+      headers: {
+        ...persisted.headers,
+        "CF-Cache-Status": "LKG",
+        "X-LKG-Age": String(Date.now() - persisted.persistedAt),
+      },
+      body: persisted.body,
     };
   }
 }

@@ -111,16 +111,27 @@ export function createCoalescedHandler<
     const apiBase = envApiBase ?? config.defaultApiBase ?? origin;
 
     // Call the DO via RPC
-    const result = await (stub as any as RequestCoalescer).fetchCoalesced(
-      params,
-      apiBase,
-      config.coalescerConfig,
-    );
+    try {
+      const result = await (stub as any as RequestCoalescer).fetchCoalesced(
+        params,
+        apiBase,
+        config.coalescerConfig,
+      );
 
-    // Return the response
-    return new Response(JSON.stringify(result.body), {
-      status: result.status,
-      headers: result.headers,
-    });
+      // Return the response
+      return new Response(JSON.stringify(result.body), {
+        status: result.status,
+        headers: result.headers,
+      });
+    } catch (error) {
+      // Upstream failed and no LKG available
+      return Response.json(
+        {
+          error: "Service temporarily unavailable",
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
+        { status: 503 },
+      );
+    }
   };
 }
