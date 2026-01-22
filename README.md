@@ -28,6 +28,7 @@ When multiple requests for the same resource arrive simultaneously (thundering h
 
 - Memory cache (sub-millisecond)
 - Persistent storage (survives hibernation)
+- Last Known Good (when upstream fails)
 - Upstream API (fallback)
 
 ⚡ **Stale-While-Revalidate**
@@ -35,6 +36,13 @@ When multiple requests for the same resource arrive simultaneously (thundering h
 - Serve stale data immediately
 - Refresh in background
 - Zero-latency updates for users
+
+🛡️ **Last Known Good (LKG) Fallback**
+
+- Returns cached data when upstream fails or returns 5xx errors
+- Graceful degradation - service stays up even when origin is down
+- Automatic fallback to any cached data regardless of age
+- Special headers indicate fallback mode and data age
 
 🌐 **Named Durable Objects**
 
@@ -186,7 +194,8 @@ Configure in `wrangler.jsonc`:
    - In-flight requests (coalescing!)
    - Stale data (with background refresh)
    - Upstream API (last resort)
-6. **Response cached** in memory + storage for future requests
+   - **LKG fallback** if upstream fails or returns 5xx
+6. **Response cached** in memory + storage for future requests (only successful responses)
 
 **Coalescing in Action:**
 
@@ -201,6 +210,15 @@ Configure in `wrangler.jsonc`:
 - Returns stale data immediately (instant response)
 - Triggers background refresh (coalesced with other refreshes)
 - Next request gets fresh data
+
+**Last Known Good Fallback:**
+
+- Upstream returns 5xx error or network failure occurs
+- Returns any cached data regardless of age (ignores TTL)
+- Response includes `CF-Cache-Status: LKG` header
+- Response includes `X-LKG-Age` header showing data age in milliseconds
+- If no cached data exists, returns 503 Service Unavailable
+- Only successful responses (< 400 status) are cached
 
 See [src/do/README.md](src/do/README.md) for detailed architecture documentation.
 
